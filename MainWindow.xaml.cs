@@ -316,12 +316,28 @@ namespace ImageForensics
                 {
                     Cv2.CvtColor(src, gray, ColorConversionCodes.BGR2GRAY);
 
-                    int blockSize = 16;
-                    int stepSize = 8;
-                    int minDistance = 32; // loại trừ các khối quá gần
+                    int blockSize = 8; // Kích thước khối DCT
+                    int stepSize = 1; // Bước nhảy
+                    int vectorSize = 16; // Số hệ số DCT đầu tiên theo zigzag
+                    double oklidThreshold = 3.0; // Ngưỡng Euclidean
+                    int correlationThreshold = 20; // Số lượng vector so sánh
+                    double vecLenThreshold = 16.0; // Ngưỡng độ dài vector
+                    double numOfVectorThreshold = 0.1; // Ngưỡng số lượng vector (10%)
 
-                    // 1. Tính hash cho từng khối và lưu vị trí
-                    var hashDict = new Dictionary<string, List<OpenCvSharp.Point>>();
+                    // Ma trận quantization cho DCT
+                    float[,] QUANTIZATION_MAT_90 = new float[8,8] {
+                        {3, 2, 2, 3, 5, 8, 10, 12},
+                        {2, 2, 3, 4, 5, 12, 12, 11},
+                        {3, 3, 3, 5, 8, 11, 14, 11},
+                        {3, 3, 4, 6, 10, 17, 16, 12},
+                        {4, 4, 7, 11, 14, 22, 21, 15},
+                        {5, 7, 11, 13, 16, 12, 23, 18},
+                        {10, 13, 16, 17, 21, 24, 24, 21},
+                        {14, 18, 19, 20, 22, 20, 20, 20}
+                    };
+
+                    // 1. Chia ảnh thành các khối và lấy đặc trưng DCT
+                    var blockVectors = new List<double[]>();
                     int width = gray.Cols;
                     int height = gray.Rows;
 
@@ -331,82 +347,222 @@ namespace ImageForensics
                         {
                             using (var block = new Mat(gray, new OpenCvSharp.Rect(x, y, blockSize, blockSize)))
                             {
-                                string hash = CalculateBlockHash(block);
-                                if (!hashDict.ContainsKey(hash))
-                                    hashDict[hash] = new List<OpenCvSharp.Point>();
-                                hashDict[hash].Add(new OpenCvSharp.Point(x, y));
+                                // Lấy đặc trưng DCT
+                                var blockFloat = new Mat();
+                                block.ConvertTo(blockFloat, MatType.CV_32F);
+                                var dct = new Mat();
+                                Cv2.Dct(blockFloat, dct);
+
+                                // Quantization - giống Python hơn
+                                var dctArray = new float[blockSize, blockSize];
+                                for (int i = 0; i < blockSize; i++)
+                                {
+                                    for (int j = 0; j < blockSize; j++)
+                                    {
+                                        dctArray[i,j] = dct.At<float>(i, j);
+                                    }
+                                }
+
+                                // Áp dụng quantization matrix
+                                for (int i = 0; i < blockSize; i++)
+                                {
+                                    for (int j = 0; j < blockSize; j++)
+                                    {
+                                        dctArray[i,j] = (float)Math.Round(dctArray[i,j] / QUANTIZATION_MAT_90[i,j]);
+                                        dctArray[i,j] = (float)Math.Round(dctArray[i,j] / 4.0);
+                                        dct.Set(i, j, dctArray[i,j]);
+                                    }
+                                }
+
+                                // Lấy vector zigzag
+                                double[] zigzag = GetZigzagDCT(dct, vectorSize);
+                                
+                                // Thêm tọa độ vào vector
+                                var vector = new double[vectorSize + 2];
+                                Array.Copy(zigzag, vector, vectorSize);
+                                vector[vectorSize] = x;
+                                vector[vectorSize + 1] = y;
+                                blockVectors.Add(vector);
+
+                                blockFloat.Dispose();
+                                dct.Dispose();
                             }
                         }
                     }
 
-                    // 2. Tìm các cặp khối có hash giống nhau và vector dịch chuyển
-                    var vectorDict = new Dictionary<(int dx, int dy), List<(OpenCvSharp.Point, OpenCvSharp.Point)>>();
-                    foreach (var entry in hashDict)
+                    // 2. Sắp xếp vector theo thứ tự từ điển - giống Python hơn
+                    var blockVectorsArray = blockVectors.ToArray();
+                    Array.Sort(blockVectorsArray, (a, b) =>
                     {
-                        var points = entry.Value;
-                        if (points.Count < 2) continue;
-                        for (int i = 0; i < points.Count; i++)
+                        // So sánh từng phần tử của vector
+                        for (int i = 0; i < vectorSize; i++)
                         {
-                            for (int j = i + 1; j < points.Count; j++)
+                            int cmp = a[i].CompareTo(b[i]);
+                            if (cmp != 0) return cmp;
+                        }
+                        return 0;
+                    });
+                    blockVectors = blockVectorsArray.ToList();
+
+                    // 3. So sánh các vector và tìm các cặp tương đồng
+                    var similarPairs = new List<(OpenCvSharp.Point, OpenCvSharp.Point, double)>();
+                    var houghSpace = new double[height, width, 2];
+                    var shiftVectors = new List<(int, int, int, int, int, int, int)>();
+
+                    for (int i = 0; i < blockVectors.Count; i++)
+                    {
+                        int end = Math.Min(i + correlationThreshold, blockVectors.Count);
+                        for (int j = i + 1; j < end; j++)
+                        {
+                            double dist = EuclideanDistance(blockVectors[i], blockVectors[j], vectorSize);
+                            if (dist <= oklidThreshold)
                             {
-                                var p1 = points[i];
-                                var p2 = points[j];
-                                int dx = p2.X - p1.X;
-                                int dy = p2.Y - p1.Y;
-                                // Loại trừ các khối quá gần nhau
-                                if (Math.Abs(dx) < minDistance && Math.Abs(dy) < minDistance)
-                                    continue;
-                                var key = (dx, dy);
-                                if (!vectorDict.ContainsKey(key))
-                                    vectorDict[key] = new List<(OpenCvSharp.Point, OpenCvSharp.Point)>();
-                                vectorDict[key].Add((p1, p2));
+                                int x1 = (int)blockVectors[i][vectorSize];
+                                int y1 = (int)blockVectors[i][vectorSize + 1];
+                                int x2 = (int)blockVectors[j][vectorSize];
+                                int y2 = (int)blockVectors[j][vectorSize + 1];
+
+                                // Tính vector dịch chuyển
+                                int dx = Math.Abs(x2 - x1);
+                                int dy = Math.Abs(y2 - y1);
+                                if (EuclideanDistance(new[] { (double)x1, (double)y1 }, new[] { (double)x2, (double)y2 }, 2) >= vecLenThreshold)
+                                {
+                                    int z = (x2 >= x1) ? ((y2 >= y1) ? 0 : 1) : ((y1 >= y2) ? 0 : 1);
+                                    houghSpace[dy, dx, z]++;
+                                    shiftVectors.Add((dx, dy, z, x1, y1, x2, y2));
+                                }
                             }
                         }
                     }
 
-                    // 3. Chỉ giữ lại các vector xuất hiện nhiều lần (clone thực sự)
-                    int minPairs = 3; // ít nhất 3 cặp vùng giống nhau mới coi là clone thực sự
-                    var clonePairs = new List<(OpenCvSharp.Point, OpenCvSharp.Point)>();
-                    foreach (var entry in vectorDict)
-                    {
-                        if (entry.Value.Count >= minPairs)
-                        {
-                            clonePairs.AddRange(entry.Value);
-                        }
-                    }
+                    // 4. Tìm giá trị lớn nhất trong không gian Hough
+                    double max = 0;
+                    for (int i = 0; i < height; i++)
+                        for (int j = 0; j < width; j++)
+                            for (int h = 0; h < 2; h++)
+                                if (houghSpace[i, j, h] > max)
+                                    max = houghSpace[i, j, h];
 
-                    // 4. Đánh dấu các vùng clone và vùng gốc
+                    // 5. Đánh dấu các vùng copy-move
                     using (var result = src.Clone())
                     {
-                        foreach (var (p1, p2) in clonePairs)
+                        double threshold = max * (1 - numOfVectorThreshold);
+                        foreach (var (dx, dy, z, x1, y1, x2, y2) in shiftVectors)
                         {
-                            // Đánh dấu vùng gốc (xanh)
-                            Cv2.Rectangle(result, p1, new OpenCvSharp.Point(p1.X + blockSize, p1.Y + blockSize), new Scalar(0, 255, 0), 2);
-                            // Đánh dấu vùng clone (đỏ)
-                            Cv2.Rectangle(result, p2, new OpenCvSharp.Point(p2.X + blockSize, p2.Y + blockSize), new Scalar(0, 0, 255), 2);
-                            // Vẽ đường nối
-                            Cv2.Line(result, new OpenCvSharp.Point(p1.X + blockSize/2, p1.Y + blockSize/2), new OpenCvSharp.Point(p2.X + blockSize/2, p2.Y + blockSize/2), new Scalar(255, 255, 0), 1);
+                            if (houghSpace[dy, dx, z] >= threshold)
+                            {
+                                Cv2.Rectangle(result, new OpenCvSharp.Point(x1, y1), 
+                                            new OpenCvSharp.Point(x1 + blockSize, y1 + blockSize), 
+                                            new Scalar(0, 255, 0), 2);
+                                Cv2.Rectangle(result, new OpenCvSharp.Point(x2, y2), 
+                                            new OpenCvSharp.Point(x2 + blockSize, y2 + blockSize), 
+                                            new Scalar(0, 0, 255), 2);
+                                Cv2.Line(result, 
+                                        new OpenCvSharp.Point(x1 + blockSize/2, y1 + blockSize/2),
+                                        new OpenCvSharp.Point(x2 + blockSize/2, y2 + blockSize/2),
+                                        new Scalar(255, 255, 0), 1);
+                            }
                         }
 
-                        // Thêm chú thích
-                        Cv2.PutText(result, "Clone Detection (Green: Original, Red: Cloned)", new OpenCvSharp.Point(10, 30), HersheyFonts.HersheyComplexSmall, 1.0, Scalar.White, 2);
-                        // Hiển thị kết quả
-                        DisplayImage(result, "Clone Detection");
+                        // Thêm thông tin về Accuracy và Coverage
+                        string info = $"CMFD (DCT + Vector Quantization) - Accuracy: {CalculateAccuracy(similarPairs):F2}, Coverage: {CalculateCoverage(similarPairs, width, height):F2}";
+                        Cv2.PutText(result, info, new OpenCvSharp.Point(10, 30), HersheyFonts.HersheyComplexSmall, 1.0, Scalar.White, 2);
+                        DisplayImage(result, "Copy-Move Forgery Detection");
                     }
                 }
             }
         }
 
-        private string CalculateBlockHash(Mat block)
+        // Lấy numDCT hệ số DCT đầu tiên theo zigzag
+        private double[] GetZigzagDCT(Mat dct, int numDCT)
         {
-            int byteLen = (int)(block.Total() * block.ElemSize());
-            byte[] blockData = new byte[byteLen];
-            Marshal.Copy(block.Ptr(0), blockData, 0, byteLen);
-            using (var md5 = System.Security.Cryptography.MD5.Create())
+            var vector = new List<double>();
+            int n = dct.Rows - 1;
+            int i = 0;
+            int j = 0;
+
+            // Thêm phần tử đầu tiên
+            vector.Add(dct.At<float>(i, j));
+
+            // Quét ma trận theo zigzag
+            for (int k = 0; k < n * 2; k++)
             {
-                byte[] hashBytes = md5.ComputeHash(blockData);
-                return BitConverter.ToString(hashBytes).Replace("-", "");
+                if (j == n)   // Biên phải
+                {
+                    i++;     // Dịch xuống
+                    while (i != n)   // Đường chéo
+                    {
+                        vector.Add(dct.At<float>(i, j));
+                        i++;
+                        j--;
+                    }
+                }
+                else if (i == 0)  // Biên trên
+                {
+                    j++;
+                    while (j != 0)
+                    {
+                        vector.Add(dct.At<float>(i, j));
+                        i++;
+                        j--;
+                    }
+                }
+                else if (i == n)   // Biên dưới
+                {
+                    j++;
+                    while (j != n)
+                    {
+                        vector.Add(dct.At<float>(i, j));
+                        i--;
+                        j++;
+                    }
+                }
+                else if (j == 0)   // Biên trái
+                {
+                    i++;
+                    while (i != 0)
+                    {
+                        vector.Add(dct.At<float>(i, j));
+                        i--;
+                        j++;
+                    }
+                }
+
+                vector.Add(dct.At<float>(i, j));
             }
+
+            // Chỉ lấy numDCT phần tử đầu tiên
+            return vector.Take(numDCT).ToArray();
+        }
+
+        // Tính khoảng cách Euclidean giữa 2 vector
+        private double EuclideanDistance(double[] v1, double[] v2, int size)
+        {
+            double sum = 0;
+            for (int i = 0; i < size; i++)
+                sum += (v2[i] - v1[i]) * (v2[i] - v1[i]);
+            return Math.Sqrt(sum);
+        }
+
+        // Tính Accuracy
+        private double CalculateAccuracy(List<(OpenCvSharp.Point, OpenCvSharp.Point, double)> pairs)
+        {
+            if (pairs.Count == 0)
+                return 0.0;
+
+            int truePositives = pairs.Count(p => p.Item3 > 0.7); // Giả sử điểm > 0.7 là true positive
+            return (double)truePositives / pairs.Count;
+        }
+
+        // Tính Coverage
+        private double CalculateCoverage(List<(OpenCvSharp.Point, OpenCvSharp.Point, double)> pairs, int width, int height)
+        {
+            if (pairs.Count == 0)
+                return 0.0;
+
+            int totalBlocks = (width / 4) * (height / 4); // Tổng số khối có thể
+            int detectedBlocks = pairs.SelectMany(p => new[] { p.Item1, p.Item2 }).Distinct().Count();
+            return (double)detectedBlocks / totalBlocks;
         }
 
         private BitmapImage PerformELAAnalysisOpenCV(string imagePath)
