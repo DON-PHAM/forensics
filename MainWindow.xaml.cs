@@ -446,27 +446,56 @@ namespace ImageForensics
                     // 5. Đánh dấu các vùng copy-move
                     using (var result = src.Clone())
                     {
-                        double threshold = max * (1 - numOfVectorThreshold);
-                        foreach (var (dx, dy, z, x1, y1, x2, y2) in shiftVectors)
+                        // Tạo một layer mới với độ mờ
+                        using (var overlay = new Mat(result.Size(), MatType.CV_8UC4, new Scalar(0, 0, 0, 0)))
                         {
-                            if (houghSpace[dy, dx, z] >= threshold)
+                            double threshold = max * (1 - numOfVectorThreshold);
+                            foreach (var (dx, dy, z, x1, y1, x2, y2) in shiftVectors)
                             {
-                                Cv2.Rectangle(result, new OpenCvSharp.Point(x1, y1), 
-                                            new OpenCvSharp.Point(x1 + blockSize, y1 + blockSize), 
-                                            new Scalar(0, 255, 0), 2);
-                                Cv2.Rectangle(result, new OpenCvSharp.Point(x2, y2), 
-                                            new OpenCvSharp.Point(x2 + blockSize, y2 + blockSize), 
-                                            new Scalar(0, 0, 255), 2);
-                                Cv2.Line(result, 
-                                        new OpenCvSharp.Point(x1 + blockSize/2, y1 + blockSize/2),
-                                        new OpenCvSharp.Point(x2 + blockSize/2, y2 + blockSize/2),
-                                        new Scalar(255, 255, 0), 1);
+                                if (houghSpace[dy, dx, z] >= threshold)
+                                {
+                                    // Khoanh vùng các khối bị sao chép với màu đỏ mờ
+                                    Cv2.Rectangle(overlay, 
+                                                new OpenCvSharp.Point(x1, y1), 
+                                                new OpenCvSharp.Point(x1 + blockSize, y1 + blockSize), 
+                                                new Scalar(0, 0, 255, 128), -1);  // Màu đỏ với alpha = 128 (50% mờ)
+
+                                    Cv2.Rectangle(overlay, 
+                                                new OpenCvSharp.Point(x2, y2), 
+                                                new OpenCvSharp.Point(x2 + blockSize, y2 + blockSize), 
+                                                new Scalar(0, 0, 255, 128), -1);  // Màu đỏ với alpha = 128 (50% mờ)
+                                }
+                            }
+
+                            // Chuyển đổi ảnh gốc sang BGRA
+                            using (var resultBGRA = new Mat())
+                            {
+                                Cv2.CvtColor(result, resultBGRA, ColorConversionCodes.BGR2BGRA);
+                                
+                                // Trộn overlay với ảnh gốc
+                                for (int y = 0; y < resultBGRA.Rows; y++)
+                                {
+                                    for (int x = 0; x < resultBGRA.Cols; x++)
+                                    {
+                                        var overlayPixel = overlay.Get<Vec4b>(y, x);
+                                        if (overlayPixel[3] > 0) // Nếu pixel có alpha > 0
+                                        {
+                                            var resultPixel = resultBGRA.Get<Vec4b>(y, x);
+                                            // Trộn màu với alpha
+                                            float alpha = overlayPixel[3] / 255.0f;
+                                            resultPixel[0] = (byte)((1 - alpha) * resultPixel[0] + alpha * overlayPixel[0]);
+                                            resultPixel[1] = (byte)((1 - alpha) * resultPixel[1] + alpha * overlayPixel[1]);
+                                            resultPixel[2] = (byte)((1 - alpha) * resultPixel[2] + alpha * overlayPixel[2]);
+                                            resultBGRA.Set(y, x, resultPixel);
+                                        }
+                                    }
+                                }
+
+                                // Chuyển lại về BGR để hiển thị
+                                Cv2.CvtColor(resultBGRA, result, ColorConversionCodes.BGRA2BGR);
                             }
                         }
 
-                        // Thêm thông tin về Accuracy và Coverage
-                        string info = $"CMFD (DCT + Vector Quantization) - Accuracy: {CalculateAccuracy(similarPairs):F2}, Coverage: {CalculateCoverage(similarPairs, width, height):F2}";
-                        Cv2.PutText(result, info, new OpenCvSharp.Point(10, 30), HersheyFonts.HersheyComplexSmall, 1.0, Scalar.White, 2);
                         DisplayImage(result, "Copy-Move Forgery Detection");
                     }
                 }
