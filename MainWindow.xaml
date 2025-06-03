@@ -18,8 +18,9 @@
             <Button x:Name="btnAnalyzeDCT" Content="Analyze DCT" Width="100" Height="30" Margin="5" Click="btnAnalyzeDCT_Click" IsEnabled="False"/>
             <Button x:Name="btnAnalyzeZoom" Content="Analyze Zoom" Width="120" Height="30" Margin="5" Click="btnAnalyzeZoom_Click" IsEnabled="False"/>
             <Button x:Name="btnAnalyzeCFA" Content="Analyze CFA" Width="100" Height="30" Margin="5" Click="btnAnalyzeCFA_Click" IsEnabled="False"/>
-            <Button x:Name="btnAnalyzeADJPEG" Content="Analyze ADJPEG" Width="100" Height="30" Margin="5" Click="btnAnalyzeADJPEG_Click" IsEnabled="False"/>
-            <Button x:Name="btnAnalyzeClone" Content="Analyze Clone" Width="100" Height="30" Margin="5" Click="btnAnalyzeClone_Click" IsEnabled="False"/>
+            <Button x:Name="btnAnalyzeADJPEG" Content="ADJPEG Analysis" Click="btnAnalyzeADJPEG_Click" Margin="5" IsEnabled="False"/>
+            <Button x:Name="btnAnalyzeClone" Content="Clone Detection" Click="btnAnalyzeClone_Click" Margin="5" IsEnabled="False"/>
+            <Button x:Name="btnAnalyzeEXIF" Content="EXIF Analysis" Click="btnAnalyzeEXIF_Click" Margin="5" IsEnabled="False"/>
         </StackPanel>
 
         <!-- Thêm phần điều khiển cho Zoom Test -->
@@ -59,9 +60,11 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <Image x:Name="imgAnalyzed" Stretch="Uniform"/>
                     <TextBlock x:Name="txtNoiseAnalysis" Grid.Row="1" Margin="5" TextWrapping="Wrap"/>
+                    <RichTextBox x:Name="txtEXIFInfo" Grid.Row="2" Height="200" Margin="5" Visibility="Collapsed"/>
                 </Grid>
             </Border>
         </Grid>

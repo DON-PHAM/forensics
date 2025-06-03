@@ -13,6 +13,13 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows.Controls;
 using System.Windows.Threading;
+using System.Drawing;
+using MetadataExtractor;
+using MetadataExtractor.Formats.Exif;
+using MetadataExtractor.Formats.Jpeg;
+using System.Windows.Documents;
+using SD = System.Drawing;
+using WM = System.Windows.Media;
 
 namespace ImageForensics
 {
@@ -69,6 +76,7 @@ namespace ImageForensics
                 btnAnalyzeCFA.IsEnabled = true;
                 btnAnalyzeADJPEG.IsEnabled = true;
                 btnAnalyzeClone.IsEnabled = true;
+                btnAnalyzeEXIF.IsEnabled = true;
             }
         }
 
@@ -296,6 +304,146 @@ namespace ImageForensics
             {
                 MessageBox.Show($"Error performing Clone Detection: {ex.Message}");
             }
+        }
+
+        private void btnAnalyzeEXIF_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(currentImagePath))
+            {
+                MessageBox.Show("Vui lòng chọn ảnh trước khi phân tích.");
+                return;
+            }
+
+            try
+            {
+                var exifInfo = AnalyzeEXIFData(currentImagePath);
+                DisplayEXIFInfo(exifInfo);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Lỗi khi phân tích EXIF: {ex.Message}");
+            }
+        }
+
+        private Dictionary<string, string> AnalyzeEXIFData(string imagePath)
+        {
+            var exifInfo = new Dictionary<string, string>();
+            
+            try
+            {
+                var directories = ImageMetadataReader.ReadMetadata(imagePath);
+
+                foreach (var directory in directories)
+                {
+                    foreach (var tag in directory.Tags)
+                    {
+                        string key = $"{directory.Name} - {tag.Name}";
+                        string value = tag.Description;
+                        exifInfo[key] = value;
+                    }
+                }
+
+                // Thêm thông tin cơ bản về file
+                var fileInfo = new FileInfo(imagePath);
+                exifInfo["File Information - Name"] = fileInfo.Name;
+                exifInfo["File Information - Size"] = $"{fileInfo.Length / 1024.0:F2} KB";
+                exifInfo["File Information - Created"] = fileInfo.CreationTime.ToString();
+                exifInfo["File Information - Modified"] = fileInfo.LastWriteTime.ToString();
+
+                // Thêm thông tin ảnh
+                using (var image = SD.Image.FromFile(imagePath))
+                {
+                    exifInfo["Image Information - Width"] = $"{image.Width} pixels";
+                    exifInfo["Image Information - Height"] = $"{image.Height} pixels";
+                    exifInfo["Image Information - Format"] = image.RawFormat.ToString();
+                    exifInfo["Image Information - Resolution"] = $"{image.HorizontalResolution} x {image.VerticalResolution} DPI";
+                }
+            }
+            catch (Exception ex)
+            {
+                exifInfo["Error"] = $"Không thể đọc EXIF: {ex.Message}";
+            }
+
+            return exifInfo;
+        }
+
+        private void DisplayEXIFInfo(Dictionary<string, string> exifInfo)
+        {
+            var flowDoc = new FlowDocument();
+            
+            // Thêm tiêu đề
+            var title = new Paragraph();
+            var titleRun = new Run("EXIF Information Analysis\n\n");
+            titleRun.FontSize = 14;
+            titleRun.FontWeight = FontWeights.Bold;
+            title.Inlines.Add(titleRun);
+            flowDoc.Blocks.Add(title);
+
+            // Nhóm thông tin theo category
+            var categories = exifInfo.Keys
+                .Select(k => k.Split('-')[0].Trim())
+                .Distinct()
+                .OrderBy(c => c);
+
+            foreach (var category in categories)
+            {
+                // Tạo bảng cho mỗi category
+                var table = new Table();
+                table.CellSpacing = 0;
+                table.BorderThickness = new Thickness(0.5);
+                table.BorderBrush = WM.Brushes.Gray;
+
+                // Thêm cột cho bảng với độ rộng cố định
+                table.Columns.Add(new TableColumn { Width = new GridLength(120) }); // Cột tên thuộc tính
+                table.Columns.Add(new TableColumn { Width = new GridLength(180) }); // Cột giá trị
+
+                // Thêm tiêu đề category
+                var categoryRow = new TableRow();
+                var categoryCell = new TableCell(new Paragraph(new Run(category)));
+                categoryCell.Background = WM.Brushes.LightGray;
+                categoryCell.FontWeight = FontWeights.Bold;
+                categoryCell.FontSize = 11;
+                categoryCell.ColumnSpan = 2;
+                categoryRow.Cells.Add(categoryCell);
+                table.RowGroups.Add(new TableRowGroup());
+                table.RowGroups[0].Rows.Add(categoryRow);
+
+                // Thêm các thuộc tính trong category
+                var properties = exifInfo
+                    .Where(kvp => kvp.Key.StartsWith(category))
+                    .OrderBy(kvp => kvp.Key);
+
+                foreach (var prop in properties)
+                {
+                    var row = new TableRow();
+                    
+                    // Tên thuộc tính
+                    var nameCell = new TableCell(new Paragraph(new Run(prop.Key.Split('-')[1].Trim())));
+                    nameCell.Padding = new Thickness(3);
+                    nameCell.BorderThickness = new Thickness(0, 0, 0.5, 0.5);
+                    nameCell.BorderBrush = WM.Brushes.Gray;
+                    nameCell.FontSize = 10;
+                    row.Cells.Add(nameCell);
+
+                    // Giá trị
+                    var valueCell = new TableCell(new Paragraph(new Run(prop.Value)));
+                    valueCell.Padding = new Thickness(3);
+                    valueCell.BorderThickness = new Thickness(0, 0, 0, 0.5);
+                    valueCell.BorderBrush = WM.Brushes.Gray;
+                    valueCell.FontSize = 10;
+                    row.Cells.Add(valueCell);
+
+                    table.RowGroups[0].Rows.Add(row);
+                }
+
+                // Thêm bảng vào document
+                flowDoc.Blocks.Add(table);
+                flowDoc.Blocks.Add(new Paragraph(new Run("\n")));
+            }
+
+            // Hiển thị trong RichTextBox
+            txtEXIFInfo.Document = flowDoc;
+            txtEXIFInfo.Visibility = Visibility.Visible;
         }
 
         private void PerformCloneDetection()
@@ -1139,7 +1287,7 @@ namespace ImageForensics
                             normalized.ConvertTo(normalized, MatType.CV_8U);
 
                             // Sử dụng ảnh màu kết quả để thêm text
-                            using (var colored = normalized.Clone())
+                            using (var colored = new Mat())
                             {
                                 // Thêm thông tin phân tích
                                 string text = "CFA Analysis - Residuals";
