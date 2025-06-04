@@ -17,7 +17,7 @@
 
         <!-- Toolbar -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="10">
-            <Button Content="Load Image" Command="{Binding LoadImageCommand}" Margin="0,0,10,0"/>
+            <Button Content="Load Images" Command="{Binding LoadImageCommand}" Margin="0,0,10,0"/>
             <Button Content="EXIF Analysis" Command="{Binding AnalyzeExifCommand}" Margin="0,0,10,0"/>
             <TextBlock Text="{Binding LoadingText}" VerticalAlignment="Center" Visibility="{Binding IsLoading, Converter={StaticResource BooleanToVisibilityConverter}}"/>
         </StackPanel>
@@ -25,12 +25,28 @@
         <!-- Main Content -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="200"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Left Panel - Images -->
-            <Grid Grid.Column="0">
+            <!-- Left Panel - Image List -->
+            <Border Grid.Column="0" BorderBrush="Gray" BorderThickness="1" Margin="5">
+                <ListView ItemsSource="{Binding ImageList}" 
+                          SelectedItem="{Binding SelectedImage}"
+                          ScrollViewer.VerticalScrollBarVisibility="Auto">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal" Margin="5">
+                                <TextBlock Text="{Binding FileName}" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Border>
+
+            <!-- Middle Panel - Images -->
+            <Grid Grid.Column="1">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="*"/>
@@ -48,7 +64,7 @@
             </Grid>
 
             <!-- Right Panel - EXIF Info -->
-            <Grid Grid.Column="1">
+            <Grid Grid.Column="2">
                 <ItemsControl ItemsSource="{Binding ExifGroups}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
